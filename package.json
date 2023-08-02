@@ -22,6 +22,8 @@
     },
     "scripts": {
         "build": "tsup src/index.ts --format cjs,esm --dts --minify --clean",
+        "watch": "tsup src/index.ts --format cjs,esm --dts --watch --clean  --sourcemap",
+        "test": "tsup src/index.ts --format cjs,esm && node dist/index.js",
         "lint": "tsc"
     },
     "devDependencies": {
