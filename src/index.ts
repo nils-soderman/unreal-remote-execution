@@ -6,8 +6,8 @@ import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import * as net from 'net';
 
-const PROTOCOL_VERSION = 1;      // Protocol version number
-const PROTOCOL_MAGIC = 'ue_py';  // Protocol magic identifier
+const PROTOCOL_VERSION = 1;
+const PROTOCOL_MAGIC = 'ue_py';
 
 const NODE_PING_MILLISECONDS = 1000;
 const NODE_TIMEOUT_MILLISECONDS = 5000;
@@ -15,53 +15,34 @@ const NODE_TIMEOUT_MILLISECONDS = 5000;
 
 type ObjectValues<T> = T[keyof T];
 
-/** Struct containing all the different output types */
+/** Object containing the different output types */
 export const ECommandOutputType = {
     info: "Info",
     warning: "Warning",
     error: "Error"
 } as const;
-type CommandOutputType = ObjectValues<typeof ECommandOutputType>;
+type CommandOutputTypeT = ObjectValues<typeof ECommandOutputType>;
 
-/** Struct containing the different execution modes */
+
+/** Object containing the different execution modes */
 export const EExecMode = {
-    EXECUTE_FILE: "ExecuteFile",               // Execute the Python command as a file. This allows you to execute either a literal Python script containing multiple statements, or a file with optional arguments
-    ExecuteStatement: "ExecuteStatement",     // Execute the Python command as a single statement. This will execute a single statement and print the result. This mode cannot run files
+    EXECUTE_FILE: "ExecuteFile",
+    ExecuteStatement: "ExecuteStatement",
     EvaluateStatement: "EvaluateStatement"
 } as const;
-type ExecMode = ObjectValues<typeof EExecMode>;
+type ExecModeT = ObjectValues<typeof EExecMode>;
 
 
-/** struct containing the different command types */
-export const ECommandTypes = {
-    /** Service discovery request (UDP) */
+/** Object containing the different command types */
+const ECommandType = {
     ping: "ping",
-    /** Service discovery response (UDP) */
     pong: "pong",
-    /** Open a TCP command connection with the requested server (UDP) */
     openConnection: "open_connection",
-    closeConnection: "close_connection",   // Close any active TCP command connection (UDP)
-    command: "command",                    // Execute a remote Python command (TCP)
-    commandResults: "command_result"       // Result of executing a remote Python command (TCP)
+    closeConnection: "close_connection",
+    command: "command",
+    commandResults: "command_result"
 } as const;
-type CommandType = ObjectValues<typeof ECommandTypes>;
-
-
-interface IRemoteExecutionMessage {
-    version: number,
-    magic: string,
-    source: string,
-    type: CommandType,
-    dest?: string,
-    data?: any
-}
-
-interface IRemoteExecutionCommandData {
-    command: string
-    output: { type: CommandOutputType, output: string }[]
-    result: string
-    success: boolean
-}
+type CommandTypeT = ObjectValues<typeof ECommandType>;
 
 
 interface IRemoteExecutionNodeData {
@@ -73,20 +54,39 @@ interface IRemoteExecutionNodeData {
     user: string
 }
 
-export class RemoteExecutionConfig {
-    constructor(
-        public readonly multicastTTL: number = 0,
-        public readonly multicastGroupEndpoint: [string, number] = ['239.0.0.1', 6766],
-        public readonly multicastBindAddress: string = '0.0.0.0',
-        public readonly commandEndpoint: [string, number] = ["127.0.0.1", 6776]
-    ) { }
+interface IRemoteExecutionMessage {
+    version: number,
+    magic: string,
+    source: string,
+    type: CommandTypeT,
+    dest?: string,
+    data?: any
 }
+
+interface IRemoteExecutionMessageOpenConnectionData {
+    command_ip: string
+    command_port: number
+}
+
+export interface IRemoteExecutionMessageCommandOutputData {
+    command: string
+    output: { type: CommandOutputTypeT, output: string }[]
+    result: string
+    success: boolean
+}
+
+interface IRemoteExecutionMessageCommandInputData {
+    command: string
+    unattended: boolean
+    exec_mode: ExecModeT
+}
+
 
 // --------------------------------------------------------------------------------------------
 //                                      EVENT MANAGER
 // --------------------------------------------------------------------------------------------
-type Listener<T extends Array<any>> = (...args: T) => void;
 
+type Listener<T extends Array<any>> = (...args: T) => void;
 export class EventManager<EventMap extends Record<string, Array<any>>> {
     private eventListeners: {
         [K in keyof EventMap]?: Set<Listener<EventMap[K]>>;
@@ -119,9 +119,8 @@ export class EventManager<EventMap extends Record<string, Array<any>>> {
             listeners.delete(listener);
         }
     }
-
-
 }
+
 
 
 
@@ -129,7 +128,17 @@ export class EventManager<EventMap extends Record<string, Array<any>>> {
 //                                    REMOTE EXECUTION
 // --------------------------------------------------------------------------------------------
 
-class RemoteExecution {
+export class RemoteExecutionConfig {
+    constructor(
+        public readonly multicastTTL: number = 0,
+        public readonly multicastGroupEndpoint: [string, number] = ['239.0.0.1', 6766],
+        public readonly multicastBindAddress: string = '0.0.0.0',
+        public readonly commandEndpoint: [string, number] = ["127.0.0.1", 6776]
+    ) { }
+}
+
+
+export class RemoteExecution {
     readonly nodeId: string;
 
     private commandConnection?: RemoteExecutionCommandConnection;
@@ -186,7 +195,7 @@ class RemoteExecution {
         });
     }
 
-    public async runCommand(command: string, unattended = true, execMode: ExecMode = EExecMode.EXECUTE_FILE, raiseOnFailure = false): Promise<IRemoteExecutionCommandData> {
+    public async runCommand(command: string, unattended = true, execMode: ExecModeT = EExecMode.EXECUTE_FILE, raiseOnFailure = false): Promise<IRemoteExecutionMessageCommandOutputData> {
         if (!this.commandConnection) {
             throw new Error('No command connection open!');
         }
@@ -245,26 +254,23 @@ class RemoteExecutionBroadcastConnection {
         this.nodes = {};
     }
 
-    /**
-     * Send a ping message to all nodes. This will discover new nodes and update existing ones.
-     */
     public broadcastPing() {
         const now = Date.now();
-        this.broadcastMessage(new RemoteExecutionMessage(ECommandTypes.ping, this.nodeId))
+        this.broadcastMessage(new RemoteExecutionMessage(ECommandType.ping, this.nodeId))
         this.timeoutRemoteNodes(now);
     }
 
     public broadcastOpenConnection(remoteNode: RemoteExecutionNode) {
-        const data = {
+        const data: IRemoteExecutionMessageOpenConnectionData = {
             command_ip: this.config.commandEndpoint[0],
             command_port: this.config.commandEndpoint[1]
         };
-        const message = new RemoteExecutionMessage(ECommandTypes.openConnection, this.nodeId, remoteNode.nodeId, data);
+        const message = new RemoteExecutionMessage<IRemoteExecutionMessageOpenConnectionData>(ECommandType.openConnection, this.nodeId, remoteNode.nodeId, data);
         this.broadcastMessage(message);
     }
 
     public broadcastCloseConnection(remoteNode: RemoteExecutionNode) {
-        const message = new RemoteExecutionMessage(ECommandTypes.closeConnection, this.nodeId, remoteNode.nodeId);
+        const message = new RemoteExecutionMessage(ECommandType.closeConnection, this.nodeId, remoteNode.nodeId);
         this.broadcastMessage(message);
     }
 
@@ -325,7 +331,7 @@ class RemoteExecutionBroadcastConnection {
         if (!message.passesReceiveFilter(this.nodeId))
             return;
 
-        if (message.type === ECommandTypes.pong) {
+        if (message.type === ECommandType.pong) {
             this.handlePongMessage(message);
         }
     }
@@ -418,13 +424,14 @@ class RemoteExecutionCommandConnection {
         this.server.close();
     }
 
-    public runCommand(command: string, unattended: boolean, execMode: ExecMode): Promise<RemoteExecutionMessage<IRemoteExecutionCommandData>> {
+    public runCommand(command: string, unattended: boolean, execMode: ExecModeT): Promise<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>> {
         return new Promise((resolve, reject) => {
             if (!this.commandChannelSocket) {
-                throw new Error('No command channel open!');
+                reject(new Error('No command channel open!'));
+                return;
             }
 
-            const message = new RemoteExecutionMessage(ECommandTypes.command, this.sourceNodeId, this.remoteNode.nodeId, {
+            const message = new RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>(ECommandType.command, this.sourceNodeId, this.remoteNode.nodeId, {
                 'command': command,
                 'unattended': unattended,
                 'exec_mode': execMode,
@@ -443,8 +450,8 @@ class RemoteExecutionCommandConnection {
                     return;
                 }
 
-                const message = RemoteExecutionMessage.fromData<IRemoteExecutionCommandData>(parsedData);
-                if (message.type === ECommandTypes.commandResults) {
+                const message = RemoteExecutionMessage.fromData<IRemoteExecutionMessageCommandOutputData>(parsedData);
+                if (message.type === ECommandType.commandResults && message.passesReceiveFilter(this.sourceNodeId)) {
                     this.commandChannelSocket?.removeListener('data', dataRecieved);
                     resolve(message);
                 }
@@ -465,7 +472,7 @@ class RemoteExecutionCommandConnection {
 
 class RemoteExecutionMessage<T = any> {
     constructor(
-        readonly type: CommandType,
+        readonly type: CommandTypeT,
         readonly source: string,
         readonly dest?: string,
         readonly data?: T
@@ -500,8 +507,6 @@ class RemoteExecutionMessage<T = any> {
         return JSON.stringify(jsonObj);
     }
 
-    // public toJsonBytes() { } NOTE: Skipping this method for now, as it's not needed.
-
     public static fromData<T>(data: IRemoteExecutionMessage): RemoteExecutionMessage<T> {
         if (data.version !== PROTOCOL_VERSION) {
             throw Error(`"version" is incorrect (got ${data.version}, expected ${PROTOCOL_VERSION})!`);
@@ -535,7 +540,7 @@ const exec = new RemoteExecution();
 exec.start();
 exec.getFirstRemoteNode().then(async (node) => {
     await exec.openCommandConnection(node);
-    const message = await exec.runCommand('print("Hello World from VSCode!")', true, EExecMode.EXECUTE_FILE);
-    console.log(message.output[0]?.output);
+    const response = await exec.runCommand('print("Hello World from VSCode!")', true, EExecMode.EXECUTE_FILE);
+    console.log(response.output[0]?.output);
     exec.stop();
 });
