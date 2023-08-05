@@ -2,11 +2,9 @@
  * Remote connection between TypeScript & Unreal Engine.
  */
 
-import { assert } from 'console';
 import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import * as net from 'net';
-import { Interface } from 'readline';
 
 const PROTOCOL_VERSION = 1;      // Protocol version number
 const PROTOCOL_MAGIC = 'ue_py';  // Protocol magic identifier
@@ -27,12 +25,11 @@ type CommandOutputType = ObjectValues<typeof ECommandOutputType>;
 
 /** Struct containing the different execution modes */
 export const EExecMode = {
-    ExecuteFile: "ExecuteFile",               // Execute the Python command as a file. This allows you to execute either a literal Python script containing multiple statements, or a file with optional arguments
+    EXECUTE_FILE: "ExecuteFile",               // Execute the Python command as a file. This allows you to execute either a literal Python script containing multiple statements, or a file with optional arguments
     ExecuteStatement: "ExecuteStatement",     // Execute the Python command as a single statement. This will execute a single statement and print the result. This mode cannot run files
     EvaluateStatement: "EvaluateStatement"
 } as const;
 type ExecMode = ObjectValues<typeof EExecMode>;
-
 
 
 /** struct containing the different command types */
@@ -57,6 +54,13 @@ interface IRemoteExecutionMessage {
     type: CommandType,
     dest?: string,
     data?: any
+}
+
+interface IRemoteExecutionCommandData {
+    command: string
+    output: { type: CommandOutputType, output: string }[]
+    result: string
+    success: boolean
 }
 
 
@@ -130,7 +134,6 @@ class RemoteExecution {
 
     private commandConnection?: RemoteExecutionCommandConnection;
     private broadcastConnection: RemoteExecutionBroadcastConnection;
-    private events: { [key: string]: ((...args: any[]) => void)[] } = {};
 
     constructor(
         readonly config = new RemoteExecutionConfig()
@@ -140,7 +143,7 @@ class RemoteExecution {
     }
 
     get remoteNodes(): RemoteExecutionNode[] {
-        return this.broadcastConnection?.remoteNodes || []
+        return this.broadcastConnection?.remoteNodes || [];
     }
 
     /**
@@ -183,12 +186,17 @@ class RemoteExecution {
         });
     }
 
-    public runCommand(command: string, unattended = true, execMode: ExecMode = EExecMode.ExecuteFile, raiseOnFailure = false) {
+    public async runCommand(command: string, unattended = true, execMode: ExecMode = EExecMode.EXECUTE_FILE, raiseOnFailure = false): Promise<IRemoteExecutionCommandData> {
         if (!this.commandConnection) {
             throw new Error('No command connection open!');
         }
 
-        this.commandConnection.runCommand(command, unattended, execMode);
+        const message = await this.commandConnection.runCommand(command, unattended, execMode);
+        if (raiseOnFailure && !message.data?.success) {
+            throw new Error(`Failed to run command: ${message.data?.result}`);
+        }
+
+        return message.data!;
     }
 }
 
@@ -237,7 +245,6 @@ class RemoteExecutionBroadcastConnection {
         this.nodes = {};
     }
 
-
     /**
      * Send a ping message to all nodes. This will discover new nodes and update existing ones.
      */
@@ -247,12 +254,17 @@ class RemoteExecutionBroadcastConnection {
         this.timeoutRemoteNodes(now);
     }
 
-    public broadcastOpenConnection(node: RemoteExecutionNode) {
+    public broadcastOpenConnection(remoteNode: RemoteExecutionNode) {
         const data = {
             command_ip: this.config.commandEndpoint[0],
             command_port: this.config.commandEndpoint[1]
         };
-        const message = new RemoteExecutionMessage(ECommandTypes.openConnection, this.nodeId, node.nodeId, data);
+        const message = new RemoteExecutionMessage(ECommandTypes.openConnection, this.nodeId, remoteNode.nodeId, data);
+        this.broadcastMessage(message);
+    }
+
+    public broadcastCloseConnection(remoteNode: RemoteExecutionNode) {
+        const message = new RemoteExecutionMessage(ECommandTypes.closeConnection, this.nodeId, remoteNode.nodeId);
         this.broadcastMessage(message);
     }
 
@@ -387,7 +399,7 @@ class RemoteExecutionCommandConnection {
         this.server = net.createServer();
     }
 
-    public async open(broadcastConnection: RemoteExecutionBroadcastConnection) : Promise<void> {
+    public async open(broadcastConnection: RemoteExecutionBroadcastConnection): Promise<void> {
         return new Promise((resolve, reject) => {
             this.server.once('connection', (socket) => {
                 this.commandChannelSocket = socket;
@@ -401,26 +413,48 @@ class RemoteExecutionCommandConnection {
     }
 
     public close(broadcastConnection: RemoteExecutionBroadcastConnection) {
-        this.server.close();
+        broadcastConnection.broadcastCloseConnection(this.remoteNode);
         this.commandChannelSocket?.destroy();
+        this.server.close();
     }
 
-    public runCommand(command: string, unattended: boolean, execMode: keyof typeof EExecMode) {
-        if (!this.commandChannelSocket) {
-            throw new Error('No command channel open!');
-        }
+    public runCommand(command: string, unattended: boolean, execMode: ExecMode): Promise<RemoteExecutionMessage<IRemoteExecutionCommandData>> {
+        return new Promise((resolve, reject) => {
+            if (!this.commandChannelSocket) {
+                throw new Error('No command channel open!');
+            }
 
-        const message = new RemoteExecutionMessage(ECommandTypes.command, this.sourceNodeId, this.remoteNode.nodeId, {
-            'command': command,
-            'unattended': unattended,
-            'exec_mode': execMode,
+            const message = new RemoteExecutionMessage(ECommandTypes.command, this.sourceNodeId, this.remoteNode.nodeId, {
+                'command': command,
+                'unattended': unattended,
+                'exec_mode': execMode,
+            });
+
+            let dataRecived: string = '';
+            const dataRecieved = (data: Buffer) => {
+                dataRecived += data.toString('utf-8');
+                let parsedData: IRemoteExecutionMessage;
+                try {
+                    parsedData = JSON.parse(dataRecived);
+                }
+                catch (e) {
+                    // If the message sent is too large, Unreal will send the message in chunks.
+                    // And if the message is sent in chunks, it will to be parsable until the last chunk is recieved.
+                    return;
+                }
+
+                const message = RemoteExecutionMessage.fromData<IRemoteExecutionCommandData>(parsedData);
+                if (message.type === ECommandTypes.commandResults) {
+                    this.commandChannelSocket?.removeListener('data', dataRecieved);
+                    resolve(message);
+                }
+            };
+
+            this.commandChannelSocket.on('data', dataRecieved);
+
+            this.commandChannelSocket.write(message.toJson());
         });
-
-        
-
-        this.commandChannelSocket.write(message.toJson());
     }
-
 
 }
 
@@ -429,12 +463,12 @@ class RemoteExecutionCommandConnection {
 //                                         MESSAGE
 // --------------------------------------------------------------------------------------------
 
-class RemoteExecutionMessage {
+class RemoteExecutionMessage<T = any> {
     constructor(
         readonly type: CommandType,
         readonly source: string,
         readonly dest?: string,
-        readonly data?: any
+        readonly data?: T
     ) { }
 
 
@@ -468,27 +502,26 @@ class RemoteExecutionMessage {
 
     // public toJsonBytes() { } NOTE: Skipping this method for now, as it's not needed.
 
-    public static fromJson(jsonStr: string): RemoteExecutionMessage {
-        const jsonObj: IRemoteExecutionMessage = JSON.parse(jsonStr);
-
-        if (jsonObj.version !== PROTOCOL_VERSION) {
-            throw Error(`"version" is incorrect (got ${jsonObj.version}, expected ${PROTOCOL_VERSION})!`);
+    public static fromData<T>(data: IRemoteExecutionMessage): RemoteExecutionMessage<T> {
+        if (data.version !== PROTOCOL_VERSION) {
+            throw Error(`"version" is incorrect (got ${data.version}, expected ${PROTOCOL_VERSION})!`);
         }
-        if (jsonObj.magic !== PROTOCOL_MAGIC) {
-            throw Error(`"magic" is incorrect (got "${jsonObj.magic}", expected "${PROTOCOL_MAGIC}")!`);
+        if (data.magic !== PROTOCOL_MAGIC) {
+            throw Error(`"magic" is incorrect (got "${data.magic}", expected "${PROTOCOL_MAGIC}")!`);
         }
 
         return new RemoteExecutionMessage(
-            jsonObj.type,
-            jsonObj.source,
-            jsonObj.dest,
-            jsonObj.data
+            data.type,
+            data.source,
+            data.dest,
+            data.data
         );
     }
 
-    public static fromBuffer(buffer: Buffer): RemoteExecutionMessage {
-        const jsonStr = buffer.toString("utf-8"); // TODO: Specify utf-8 encoding? didn't do it in previous version
-        return this.fromJson(jsonStr);
+    public static fromBuffer<T>(buffer: Buffer): RemoteExecutionMessage<T> {
+        const jsonStr = buffer.toString("utf-8");
+        const data = JSON.parse(jsonStr);
+        return this.fromData(data);
     }
 }
 
@@ -502,5 +535,7 @@ const exec = new RemoteExecution();
 exec.start();
 exec.getFirstRemoteNode().then(async (node) => {
     await exec.openCommandConnection(node);
-    exec.runCommand('print("Hello World!")', EExecMode.ExecuteFile);
+    const message = await exec.runCommand('print("Hello World from VSCode!")', true, EExecMode.EXECUTE_FILE);
+    console.log(message.output[0]?.output);
+    exec.stop();
 });
