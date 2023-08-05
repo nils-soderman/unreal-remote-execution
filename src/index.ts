@@ -121,12 +121,19 @@ export class EventManager<EventMap extends Record<string, Array<any>>> {
     }
 }
 
-
-
+type RemoteExecutionEvents = {
+    nodeFound: [RemoteExecutionNode];
+    nodeTimedOut: [RemoteExecutionNode];
+}
 
 // --------------------------------------------------------------------------------------------
 //                                    REMOTE EXECUTION
 // --------------------------------------------------------------------------------------------
+
+function timeoutPromise(ms: number, reason?: string) {
+    return new Promise((resolve, reject) => setTimeout(() => reject(new Error(reason)), ms));
+}
+
 
 export class RemoteExecutionConfig {
     constructor(
@@ -139,6 +146,7 @@ export class RemoteExecutionConfig {
 
 
 export class RemoteExecution {
+    public events: EventManager<RemoteExecutionEvents>;
     readonly nodeId: string;
 
     private commandConnection?: RemoteExecutionCommandConnection;
@@ -148,7 +156,8 @@ export class RemoteExecution {
         readonly config = new RemoteExecutionConfig()
     ) {
         this.nodeId = crypto.randomUUID();
-        this.broadcastConnection = new RemoteExecutionBroadcastConnection(this.config, this.nodeId);
+        this.events = new EventManager();
+        this.broadcastConnection = new RemoteExecutionBroadcastConnection(this.config, this.nodeId, this.events);
     }
 
     get remoteNodes(): RemoteExecutionNode[] {
@@ -158,8 +167,8 @@ export class RemoteExecution {
     /**
      * Start broadcasting server searching for available nodes.
      */
-    public async start() {
-        await this.broadcastConnection.open();
+    public async start(pingInterval = NODE_PING_MILLISECONDS) {
+        await this.broadcastConnection.open(pingInterval);
     }
 
     public stop() {
@@ -171,9 +180,12 @@ export class RemoteExecution {
         return this.commandConnection != undefined;
     }
 
-    public async openCommandConnection(node: RemoteExecutionNode) {
+    public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true) {
         this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node);
         await this.commandConnection.open(this.broadcastConnection);
+
+        if (bStopSearchingForNodes)
+            this.broadcastConnection.stopSearchingForNodes();
     }
 
     public closeCommandConnection() {
@@ -183,8 +195,8 @@ export class RemoteExecution {
         }
     }
 
-    public getFirstRemoteNode(): Promise<RemoteExecutionNode> {
-        return new Promise((resolve, reject) => {
+    public getFirstRemoteNode(timeoutMs: number = 0): Promise<RemoteExecutionNode> {
+        const actualPromise = new Promise<RemoteExecutionNode>((resolve, reject) => {
             if (this.remoteNodes.length > 0) {
                 resolve(this.remoteNodes[0]!);
             }
@@ -193,11 +205,17 @@ export class RemoteExecution {
                 resolve(node);
             });
         });
+
+        if (timeoutMs > 0) {
+            return Promise.race([actualPromise, timeoutPromise(timeoutMs, "Timed out: Could not find a node within the given time.")]) as Promise<RemoteExecutionNode>;
+        }
+
+        return actualPromise;
     }
 
     public async runCommand(command: string, unattended = true, execMode: ExecModeT = EExecMode.EXECUTE_FILE, raiseOnFailure = false): Promise<IRemoteExecutionMessageCommandOutputData> {
         if (!this.commandConnection) {
-            throw new Error('No command connection open!');
+            throw new Error('No command connection open! Please call and await "openCommandConnection" first.');
         }
 
         const message = await this.commandConnection.runCommand(command, unattended, execMode);
@@ -214,34 +232,27 @@ export class RemoteExecution {
 // --------------------------------------------------------------------------------------------
 //                               BROADCAST CONNECTION
 // --------------------------------------------------------------------------------------------
-type BroadcastEventMap = {
-    nodeFound: [RemoteExecutionNode];
-}
-
 class RemoteExecutionBroadcastConnection {
     public nodes: { [key: string]: RemoteExecutionNode } = {};
     private broadcastSocket?: dgram.Socket;
     private broadcastListenThread?: NodeJS.Timeout;
 
-    public events: EventManager<BroadcastEventMap>;
-
     constructor(
         readonly config: RemoteExecutionConfig,
-        readonly nodeId: string
+        readonly nodeId: string,
+        readonly events: EventManager<RemoteExecutionEvents>
     ) {
-        this.events = new EventManager();
     }
 
     get remoteNodes() {
         return Object.values(this.nodes);
     }
 
-    public async open(bPeriodicBroadcast = true) {
+    public async open(pingInterval: number) {
         this.timeoutRemoteNodes();
         await this.initBroadcastSocket();
         this.broadcastPing();
-        if (bPeriodicBroadcast)
-            this.initBroadcastListenThread();
+        this.initBroadcastListenThread(pingInterval);
     }
 
     public close() {
@@ -250,6 +261,10 @@ class RemoteExecutionBroadcastConnection {
             this.broadcastSocket = undefined;
         }
 
+        this.stopSearchingForNodes();
+    }
+
+    public stopSearchingForNodes() {
         clearInterval(this.broadcastListenThread);
         this.nodes = {};
     }
@@ -288,9 +303,6 @@ class RemoteExecutionBroadcastConnection {
                 if (!this.broadcastSocket)
                     return;
 
-                const address = this.broadcastSocket.address()
-                console.log(`Server listening ${address.address}:${address.port}`)
-
                 this.broadcastSocket.setMulticastLoopback(true);
                 this.broadcastSocket.setMulticastTTL(this.config.multicastTTL);
                 this.broadcastSocket.setMulticastInterface(this.config.multicastBindAddress);
@@ -308,9 +320,9 @@ class RemoteExecutionBroadcastConnection {
         });
     }
 
-    private initBroadcastListenThread(interval = NODE_PING_MILLISECONDS) {
+    private initBroadcastListenThread(pingInterval: number) {
         if (!this.broadcastListenThread) {
-            this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), interval);
+            this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), pingInterval);
         }
     }
 
@@ -346,7 +358,6 @@ class RemoteExecutionBroadcastConnection {
             node.update(data, now);
         }
         else {
-            console.log(`New node discovered: ${nodeId}`);
             const node = new RemoteExecutionNode(nodeId, data, now);
             this.nodes[nodeId] = node;
             this.events.emit('nodeFound', node);
@@ -356,8 +367,8 @@ class RemoteExecutionBroadcastConnection {
     private timeoutRemoteNodes(now = Date.now()) {
         for (const [nodeId, node] of Object.entries(this.remoteNodes)) {
             if (node.shouldTimeout(now)) {
-                console.log(`Node timed out: ${nodeId}`);
                 delete this.nodes[nodeId];
+                this.events.emit('nodeTimedOut', node);
             }
         }
     }
@@ -538,9 +549,12 @@ class RemoteExecutionMessage<T = any> {
 
 const exec = new RemoteExecution();
 exec.start();
-exec.getFirstRemoteNode().then(async (node) => {
+exec.events.addEventListener('nodeFound', (node) => {
+
+});
+exec.getFirstRemoteNode(500).then(async (node) => {
     await exec.openCommandConnection(node);
     const response = await exec.runCommand('print("Hello World from VSCode!")', true, EExecMode.EXECUTE_FILE);
     console.log(response.output[0]?.output);
-    exec.stop();
+
 });
