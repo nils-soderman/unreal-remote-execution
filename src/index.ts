@@ -177,7 +177,7 @@ export class RemoteExecution {
     }
 
     public hasCommandConnection() {
-        return this.commandConnection != undefined;
+        return this.commandConnection !== undefined;
     }
 
     public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true) {
@@ -407,6 +407,8 @@ class RemoteExecutionNode {
 class RemoteExecutionCommandConnection {
     private server: net.Server;
     private commandChannelSocket?: net.Socket;
+    private commandQueue: [RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>, (value: RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData> | PromiseLike<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>>) => void, (reason?: any) => void][] = []
+    private isRunningCommand = false;
 
     constructor(
         readonly config: RemoteExecutionConfig,
@@ -433,6 +435,48 @@ class RemoteExecutionCommandConnection {
         broadcastConnection.broadcastCloseConnection(this.remoteNode);
         this.commandChannelSocket?.destroy();
         this.server.close();
+
+        if (this.commandQueue.length > 0) {
+            this.commandQueue.forEach(([, , reject]) => reject(new Error('Connection closed!')));
+            this.commandQueue = [];
+        }
+    }
+
+    private _runNextCommandInQue() {
+        if (this.commandQueue.length === 0 || !this.commandChannelSocket)
+        {
+            this.isRunningCommand = false;
+            return;
+        }
+        this.isRunningCommand = true;
+
+        const [message, resolve, reject] = this.commandQueue.shift()!;
+
+        let dataRecived: string = '';
+        const dataRecieved = (data: Buffer) => {
+            dataRecived += data.toString('utf-8');
+            let parsedData: IRemoteExecutionMessage;
+            try {
+                parsedData = JSON.parse(dataRecived);
+            }
+            catch (e) {
+                // If the message sent is too large, Unreal will send the message in chunks.
+                // And if the message is sent in chunks, it will to be parsable until the last chunk is recieved.
+                return;
+            }
+
+            const message = RemoteExecutionMessage.fromData<IRemoteExecutionMessageCommandOutputData>(parsedData);
+            if (message.type === ECommandType.commandResults && message.passesReceiveFilter(this.sourceNodeId)) {
+                this.commandChannelSocket?.removeListener('data', dataRecieved);
+                resolve(message);
+
+                this._runNextCommandInQue();
+            }
+        };
+
+        this.commandChannelSocket.on('data', dataRecieved);
+
+        this.commandChannelSocket.write(message.toJson());
     }
 
     public runCommand(command: string, unattended: boolean, execMode: ExecModeT): Promise<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>> {
@@ -448,29 +492,10 @@ class RemoteExecutionCommandConnection {
                 'exec_mode': execMode,
             });
 
-            let dataRecived: string = '';
-            const dataRecieved = (data: Buffer) => {
-                dataRecived += data.toString('utf-8');
-                let parsedData: IRemoteExecutionMessage;
-                try {
-                    parsedData = JSON.parse(dataRecived);
-                }
-                catch (e) {
-                    // If the message sent is too large, Unreal will send the message in chunks.
-                    // And if the message is sent in chunks, it will to be parsable until the last chunk is recieved.
-                    return;
-                }
-
-                const message = RemoteExecutionMessage.fromData<IRemoteExecutionMessageCommandOutputData>(parsedData);
-                if (message.type === ECommandType.commandResults && message.passesReceiveFilter(this.sourceNodeId)) {
-                    this.commandChannelSocket?.removeListener('data', dataRecieved);
-                    resolve(message);
-                }
-            };
-
-            this.commandChannelSocket.on('data', dataRecieved);
-
-            this.commandChannelSocket.write(message.toJson());
+            this.commandQueue.push([message, resolve, reject]);
+            if (this.commandQueue.length === 1 && !this.isRunningCommand) {
+                this._runNextCommandInQue();
+            }
         });
     }
 
@@ -554,7 +579,15 @@ exec.events.addEventListener('nodeFound', (node) => {
 });
 exec.getFirstRemoteNode(500).then(async (node) => {
     await exec.openCommandConnection(node);
-    const response = await exec.runCommand('print("Hello World from VSCode!")', true, EExecMode.EXECUTE_FILE);
-    console.log(response.output[0]?.output);
+    exec.runCommand('print("Hello")', true, EExecMode.EXECUTE_FILE).then((response) => {
+        console.log("1", response.output[0]?.output, response.output[0]?.output.trim() === "Hello");
+    })
+
+    // Sleep for 1 second to make sure the previous command has finished.
+    // await new Promise((resolve) => setTimeout(resolve, 500));
+
+    exec.runCommand('print("World")', true, EExecMode.EXECUTE_FILE).then((response) => {
+        console.log("2", response.output[0]?.output, response.output[0]?.output.trim() === "World");
+    })
 
 });
