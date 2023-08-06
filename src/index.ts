@@ -1,5 +1,5 @@
 /**
- * Remote connection between TypeScript & Unreal Engine.
+ * RemoteExecution connection between NodeJS & Unreal Engine.
  */
 
 import * as crypto from 'crypto';
@@ -17,9 +17,9 @@ type ObjectValues<T> = T[keyof T];
 
 /** Object containing the different output types */
 export const ECommandOutputType = {
-    info: "Info",
-    warning: "Warning",
-    error: "Error"
+    INFO: "Info",
+    WARNING: "Warning",
+    ERROR: "Error"
 } as const;
 type CommandOutputTypeT = ObjectValues<typeof ECommandOutputType>;
 
@@ -27,20 +27,20 @@ type CommandOutputTypeT = ObjectValues<typeof ECommandOutputType>;
 /** Object containing the different execution modes */
 export const EExecMode = {
     EXECUTE_FILE: "ExecuteFile",
-    ExecuteStatement: "ExecuteStatement",
-    EvaluateStatement: "EvaluateStatement"
+    EXECUTE_STATEMENT: "ExecuteStatement",
+    EVALUATE_STATEMENT: "EvaluateStatement"
 } as const;
 type ExecModeT = ObjectValues<typeof EExecMode>;
 
 
 /** Object containing the different command types */
 const ECommandType = {
-    ping: "ping",
-    pong: "pong",
-    openConnection: "open_connection",
-    closeConnection: "close_connection",
-    command: "command",
-    commandResults: "command_result"
+    PING: "ping",
+    PONG: "pong",
+    OPEN_CONNECTION: "open_connection",
+    CLOSE_CONNECTION: "close_connection",
+    COMMAND: "command",
+    COMMAND_RESULT: "command_result"
 } as const;
 type CommandTypeT = ObjectValues<typeof ECommandType>;
 
@@ -69,9 +69,13 @@ interface IRemoteExecutionMessageOpenConnectionData {
 }
 
 export interface IRemoteExecutionMessageCommandOutputData {
+    /** The command that was run. */
     command: string
+    /** The output of the command. Such as print/log statements. */
     output: { type: CommandOutputTypeT, output: string }[]
+    /** If an exception was raised, this will contain the traceback message. */
     result: string
+    /** True if the command ran successfully without any errors. */
     success: boolean
 }
 
@@ -136,6 +140,13 @@ function timeoutPromise(ms: number, reason?: string) {
 
 
 export class RemoteExecutionConfig {
+
+    /**
+     * @param multicastTTL The TTL (Time To Live) that the UDP multicast socket should use. 0 = Limited to the local host, 1 = Limited to the same subnet
+     * @param multicastGroupEndpoint The multicast group endpoint to use. [IP, Port]
+     * @param multicastBindAddress The address to bind the multicast socket to.
+     * @param commandEndpoint The endpoint to use for the command channel. [IP, Port]
+     */
     constructor(
         public readonly multicastTTL: number = 0,
         public readonly multicastGroupEndpoint: [string, number] = ['239.0.0.1', 6766],
@@ -146,12 +157,19 @@ export class RemoteExecutionConfig {
 
 
 export class RemoteExecution {
+    /** Event manager used to listen for specific events. */
     public events: EventManager<RemoteExecutionEvents>;
+
+    /** Random UUID used to identify this node. */
     readonly nodeId: string;
 
-    private commandConnection?: RemoteExecutionCommandConnection;
     private broadcastConnection: RemoteExecutionBroadcastConnection;
+    private commandConnection?: RemoteExecutionCommandConnection;
 
+    /**
+     * The RemoteExecution class is used to find and connect to remote Unreal Engine instances.
+     * @param config The configuration to use. Some of these settings must match the project settings in the Unreal Engine Python plugin for the Unreal Engine instance you want to connect to. 
+     */
     constructor(
         readonly config = new RemoteExecutionConfig()
     ) {
@@ -160,34 +178,46 @@ export class RemoteExecution {
         this.broadcastConnection = new RemoteExecutionBroadcastConnection(this.config, this.nodeId, this.events);
     }
 
+    /**
+     * List of all the remote nodes that have been found.
+     */
     get remoteNodes(): RemoteExecutionNode[] {
         return this.broadcastConnection?.remoteNodes || [];
     }
 
     /**
      * Start broadcasting server searching for available nodes.
+     * @param pingInterval The interval in milliseconds between each ping.
      */
     public async start(pingInterval = NODE_PING_MILLISECONDS) {
         await this.broadcastConnection.open(pingInterval);
     }
 
+    /** Stop all servers & close all connections. */
     public stop() {
         this.closeCommandConnection();
         this.broadcastConnection.close();
     }
 
+    /** Check if a command connection is open. */
     public hasCommandConnection() {
         return this.commandConnection !== undefined;
     }
 
+    /**
+     * Open a command connection to the given node.
+     * @param node The node to open a command connection with.
+     * @param bStopSearchingForNodes If true, stop searching for nodes after the connection has been opened.
+     */
     public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true) {
-        this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node);
+        this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
         await this.commandConnection.open(this.broadcastConnection);
 
         if (bStopSearchingForNodes)
             this.broadcastConnection.stopSearchingForNodes();
     }
 
+    /** Close the current command connection. */
     public closeCommandConnection() {
         if (this.commandConnection) {
             this.commandConnection.close(this.broadcastConnection);
@@ -195,13 +225,17 @@ export class RemoteExecution {
         }
     }
 
+    /**
+     * Get the first remote node that's found.
+     * @param timeoutMs The timeout in milliseconds. If 0, the promise will never timeout.
+     */
     public getFirstRemoteNode(timeoutMs: number = 0): Promise<RemoteExecutionNode> {
         const actualPromise = new Promise<RemoteExecutionNode>((resolve, reject) => {
             if (this.remoteNodes.length > 0) {
                 resolve(this.remoteNodes[0]!);
             }
 
-            this.broadcastConnection.events.once('nodeFound', (node) => {
+            this.events.once('nodeFound', (node) => {
                 resolve(node);
             });
         });
@@ -213,6 +247,14 @@ export class RemoteExecution {
         return actualPromise;
     }
 
+    /**
+     * Run a command on the current command connection.
+     * @param command The Python code to run, use `;` to separate multiple commands.
+     * @param unattended True to run the command unattended, suppressing some UI. Defaults to `true`.
+     * @param execMode The execution mode to use. Defaults to `EExecMode.EXECUTE_FILE`.
+     * @param raiseOnFailure If true, throw an error if the command fails.
+     * @returns The command response. Object containing the output such as print statements, and the result of the command.
+     */
     public async runCommand(command: string, unattended = true, execMode: ExecModeT = EExecMode.EXECUTE_FILE, raiseOnFailure = false): Promise<IRemoteExecutionMessageCommandOutputData> {
         if (!this.commandConnection) {
             throw new Error('No command connection open! Please call and await "openCommandConnection" first.');
@@ -233,28 +275,34 @@ export class RemoteExecution {
 //                               BROADCAST CONNECTION
 // --------------------------------------------------------------------------------------------
 class RemoteExecutionBroadcastConnection {
-    public nodes: { [key: string]: RemoteExecutionNode } = {};
+    private nodes: { [key: string]: RemoteExecutionNode } = {};
     private broadcastSocket?: dgram.Socket;
     private broadcastListenThread?: NodeJS.Timeout;
 
     constructor(
         readonly config: RemoteExecutionConfig,
         readonly nodeId: string,
-        readonly events: EventManager<RemoteExecutionEvents>
-    ) {
-    }
+        private events: EventManager<RemoteExecutionEvents>
+    ) { }
 
     get remoteNodes() {
         return Object.values(this.nodes);
     }
 
+    /**
+     * Start the broadcasting server searching for available nodes.
+     * @param pingInterval The interval in milliseconds between each ping.
+     */
     public async open(pingInterval: number) {
         this.timeoutRemoteNodes();
-        await this.initBroadcastSocket();
+        if (!this.broadcastSocket)
+            await this.initBroadcastSocket();
+
         this.broadcastPing();
-        this.initBroadcastListenThread(pingInterval);
+        this.startSearchingForNodes(pingInterval);
     }
 
+    /** Close the broadcasting server. */
     public close() {
         if (this.broadcastSocket) {
             this.broadcastSocket.close();
@@ -264,28 +312,42 @@ class RemoteExecutionBroadcastConnection {
         this.stopSearchingForNodes();
     }
 
+    /** Stop searching for nodes. The broadcasting server is still live. */
     public stopSearchingForNodes() {
         clearInterval(this.broadcastListenThread);
         this.nodes = {};
     }
 
+    /**
+     * Broadcast a ping message to all nodes.
+     * Any nodes listening will respond with a pong message.
+     * This is used for discovering available nodes.
+     */
     public broadcastPing() {
         const now = Date.now();
-        this.broadcastMessage(new RemoteExecutionMessage(ECommandType.ping, this.nodeId))
+        this.broadcastMessage(new RemoteExecutionMessage(ECommandType.PING, this.nodeId))
         this.timeoutRemoteNodes(now);
     }
 
+    /**
+     * Broadcast a open connection message, specifying the nodeId to open a connection with.
+     * @param remoteNode The node to open a connection with.
+     */
     public broadcastOpenConnection(remoteNode: RemoteExecutionNode) {
         const data: IRemoteExecutionMessageOpenConnectionData = {
             command_ip: this.config.commandEndpoint[0],
             command_port: this.config.commandEndpoint[1]
         };
-        const message = new RemoteExecutionMessage<IRemoteExecutionMessageOpenConnectionData>(ECommandType.openConnection, this.nodeId, remoteNode.nodeId, data);
+        const message = new RemoteExecutionMessage<IRemoteExecutionMessageOpenConnectionData>(ECommandType.OPEN_CONNECTION, this.nodeId, remoteNode.nodeId, data);
         this.broadcastMessage(message);
     }
 
+    /**
+     * Broadcast a close connection message, specifying the nodeId to close the connection with.
+     * @param remoteNode The node to close the connection with.
+     */
     public broadcastCloseConnection(remoteNode: RemoteExecutionNode) {
-        const message = new RemoteExecutionMessage(ECommandType.closeConnection, this.nodeId, remoteNode.nodeId);
+        const message = new RemoteExecutionMessage(ECommandType.CLOSE_CONNECTION, this.nodeId, remoteNode.nodeId);
         this.broadcastMessage(message);
     }
 
@@ -320,12 +382,23 @@ class RemoteExecutionBroadcastConnection {
         });
     }
 
-    private initBroadcastListenThread(pingInterval: number) {
-        if (!this.broadcastListenThread) {
-            this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), pingInterval);
+    /**
+     * Start sending ping messages to all nodes at the given interval.
+     * @param pingInterval The interval in milliseconds between each ping.
+     */
+    private startSearchingForNodes(pingInterval: number) {
+        if (this.broadcastListenThread) {
+            clearInterval(this.broadcastListenThread);
         }
+
+        if (pingInterval > 0)
+            this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), pingInterval);
     }
 
+    /**
+     * Broadcast a message to all nodes.
+     * @param message The message to broadcast.
+     */
     private broadcastMessage(message: RemoteExecutionMessage): void {
         const data = message.toJson()
         this.broadcastSocket?.send(
@@ -335,23 +408,42 @@ class RemoteExecutionBroadcastConnection {
         )
     }
 
+    /**
+     * Handle data recieved through the broadcast socket.
+     * @param data The data recieved.
+     * @param remote The remote info of the sender.
+     */
     private handleData(data: Buffer, remote: dgram.RemoteInfo) {
-        this.handleMessage(RemoteExecutionMessage.fromBuffer(data));
+        const message = RemoteExecutionMessage.fromBuffer(data);
+
+        if (message.passesReceiveFilter(this.nodeId))
+            this.handleMessage(message);
     }
 
+    /**
+     * Handle messages recieved through the broadcast socket.
+     * @param message The message recieved.
+     */
     private handleMessage(message: RemoteExecutionMessage) {
-        if (!message.passesReceiveFilter(this.nodeId))
-            return;
-
-        if (message.type === ECommandType.pong) {
+        if (message.type === ECommandType.PONG) {
             this.handlePongMessage(message);
         }
     }
 
+    /**
+     * Handle a pong messages recieved.
+     * @param message The pong message recieved.
+     */
     private handlePongMessage(message: RemoteExecutionMessage) {
         this.updateRemoteNode(message.source, message.data);
     }
 
+    /**
+     * Update a remote node with new data.
+     * @param nodeId The id of the node to update.
+     * @param data The new data
+     * @param now The current time
+     */
     private updateRemoteNode(nodeId: string, data: IRemoteExecutionNodeData, now = Date.now()) {
         const node = this.nodes[nodeId];
         if (node) {
@@ -364,6 +456,7 @@ class RemoteExecutionBroadcastConnection {
         }
     }
 
+    /** Check if any nodes should be considered timed out. */
     private timeoutRemoteNodes(now = Date.now()) {
         for (const [nodeId, node] of Object.entries(this.remoteNodes)) {
             if (node.shouldTimeout(now)) {
@@ -372,30 +465,29 @@ class RemoteExecutionBroadcastConnection {
             }
         }
     }
-
-
 }
 
 
-
-class RemoteExecutionNode {
-    public lastPong: number;
-
+export class RemoteExecutionNode {
     constructor(
         public readonly nodeId: string,
         public data: IRemoteExecutionNodeData,
-        now?: number
-    ) {
-        this.lastPong = now || Date.now();
-    }
+        private lastPong: number = Date.now()
+    ) { }
 
-    public update(data: IRemoteExecutionNodeData, now?: number) {
+    /**
+     * Update the node data. This method should not be used outside of this API.
+     * @param data 
+     * @param lastPong 
+     */
+    public update(data: IRemoteExecutionNodeData, lastPong: number = Date.now()) {
         this.data = data;
-        this.lastPong = now || Date.now();
+        this.lastPong = lastPong;
     }
 
-    public shouldTimeout(now?: number) {
-        return this.lastPong + NODE_TIMEOUT_MILLISECONDS < (now || Date.now());
+    /** Check if this node should be considered timed out.*/
+    public shouldTimeout(now: number): boolean {
+        return this.lastPong + NODE_TIMEOUT_MILLISECONDS < now;
     }
 }
 
@@ -413,11 +505,17 @@ class RemoteExecutionCommandConnection {
     constructor(
         readonly config: RemoteExecutionConfig,
         readonly sourceNodeId: string,
-        readonly remoteNode: RemoteExecutionNode
+        readonly remoteNode: RemoteExecutionNode,
+        private events: EventManager<RemoteExecutionEvents>
     ) {
         this.server = net.createServer();
     }
 
+    /**
+     * Open a command connection to the given node.
+     * @param broadcastConnection The RemoteExecutionBroadcastConnection instance to use.
+     * @returns A promise that resolves when the connection is open.
+     */
     public async open(broadcastConnection: RemoteExecutionBroadcastConnection): Promise<void> {
         return new Promise((resolve, reject) => {
             this.server.once('connection', (socket) => {
@@ -431,6 +529,10 @@ class RemoteExecutionCommandConnection {
         });
     }
 
+    /**
+     * Close the command connection.
+     * @param broadcastConnection The RemoteExecutionBroadcastConnection instance to use.
+     */
     public close(broadcastConnection: RemoteExecutionBroadcastConnection) {
         broadcastConnection.broadcastCloseConnection(this.remoteNode);
         this.commandChannelSocket?.destroy();
@@ -442,9 +544,36 @@ class RemoteExecutionCommandConnection {
         }
     }
 
+    /**
+     * Run a python command
+     * @param command The Python command/code to run
+     * @param unattended True to run the command unattended, suppressing some UI. Defaults to `true`.
+     * @param execMode The execution mode to use. Defaults to `EExecMode.EXECUTE_FILE`.
+     * @param raiseOnFailure If true, throw an error if the command fails.
+     * @returns The message response.
+     */
+    public runCommand(command: string, unattended: boolean, execMode: ExecModeT): Promise<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>> {
+        return new Promise((resolve, reject) => {
+            if (!this.commandChannelSocket) {
+                reject(new Error('No command channel open!'));
+                return;
+            }
+
+            const message = new RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>(ECommandType.COMMAND, this.sourceNodeId, this.remoteNode.nodeId, {
+                'command': command,
+                'unattended': unattended,
+                'exec_mode': execMode,
+            });
+
+            this.commandQueue.push([message, resolve, reject]);
+            if (this.commandQueue.length === 1 && !this.isRunningCommand) {
+                this._runNextCommandInQue();
+            }
+        });
+    }
+
     private _runNextCommandInQue() {
-        if (this.commandQueue.length === 0 || !this.commandChannelSocket)
-        {
+        if (this.commandQueue.length === 0 || !this.commandChannelSocket) {
             this.isRunningCommand = false;
             return;
         }
@@ -466,7 +595,7 @@ class RemoteExecutionCommandConnection {
             }
 
             const message = RemoteExecutionMessage.fromData<IRemoteExecutionMessageCommandOutputData>(parsedData);
-            if (message.type === ECommandType.commandResults && message.passesReceiveFilter(this.sourceNodeId)) {
+            if (message.type === ECommandType.COMMAND_RESULT && message.passesReceiveFilter(this.sourceNodeId)) {
                 this.commandChannelSocket?.removeListener('data', dataRecieved);
                 resolve(message);
 
@@ -477,26 +606,6 @@ class RemoteExecutionCommandConnection {
         this.commandChannelSocket.on('data', dataRecieved);
 
         this.commandChannelSocket.write(message.toJson());
-    }
-
-    public runCommand(command: string, unattended: boolean, execMode: ExecModeT): Promise<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>> {
-        return new Promise((resolve, reject) => {
-            if (!this.commandChannelSocket) {
-                reject(new Error('No command channel open!'));
-                return;
-            }
-
-            const message = new RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>(ECommandType.command, this.sourceNodeId, this.remoteNode.nodeId, {
-                'command': command,
-                'unattended': unattended,
-                'exec_mode': execMode,
-            });
-
-            this.commandQueue.push([message, resolve, reject]);
-            if (this.commandQueue.length === 1 && !this.isRunningCommand) {
-                this._runNextCommandInQue();
-            }
-        });
     }
 
 }
@@ -514,11 +623,15 @@ class RemoteExecutionMessage<T = any> {
         readonly data?: T
     ) { }
 
-
+    /**
+     * Check if a message was meant for a spesific node.
+     * @param nodeId The node id of the remote execution object.
+     */
     public passesReceiveFilter(nodeId: string): boolean {
         return this.source != nodeId && (!this.dest || this.dest == nodeId)
     }
 
+    /** Convert the message to a JSON string thats ready to be sent over the network. */
     public toJson() {
         if (!this.type)
             throw Error('"type" cannot be empty!');
@@ -543,6 +656,10 @@ class RemoteExecutionMessage<T = any> {
         return JSON.stringify(jsonObj);
     }
 
+    /**
+     * Convert data to a RemoteExecutionMessage.
+     * @param data The object/data to convert to a RemoteExecutionMessage.
+     */
     public static fromData<T>(data: IRemoteExecutionMessage): RemoteExecutionMessage<T> {
         if (data.version !== PROTOCOL_VERSION) {
             throw Error(`"version" is incorrect (got ${data.version}, expected ${PROTOCOL_VERSION})!`);
@@ -559,6 +676,10 @@ class RemoteExecutionMessage<T = any> {
         );
     }
 
+    /**
+     * 
+     * @param buffer The buffer to convert to a RemoteExecutionMessage.
+     */
     public static fromBuffer<T>(buffer: Buffer): RemoteExecutionMessage<T> {
         const jsonStr = buffer.toString("utf-8");
         const data = JSON.parse(jsonStr);
@@ -575,19 +696,12 @@ class RemoteExecutionMessage<T = any> {
 const exec = new RemoteExecution();
 exec.start();
 exec.events.addEventListener('nodeFound', (node) => {
-
 });
+
 exec.getFirstRemoteNode(500).then(async (node) => {
     await exec.openCommandConnection(node);
-    exec.runCommand('print("Hello")', true, EExecMode.EXECUTE_FILE).then((response) => {
-        console.log("1", response.output[0]?.output, response.output[0]?.output.trim() === "Hello");
+    exec.runCommand('print("Hello")', true, EExecMode.EXECUTE_FILE, true).then((response) => {
+        console.log(response.output[0]?.output);
+        console.log(response.result);
     })
-
-    // Sleep for 1 second to make sure the previous command has finished.
-    // await new Promise((resolve) => setTimeout(resolve, 500));
-
-    exec.runCommand('print("World")', true, EExecMode.EXECUTE_FILE).then((response) => {
-        console.log("2", response.output[0]?.output, response.output[0]?.output.trim() === "World");
-    })
-
 });
