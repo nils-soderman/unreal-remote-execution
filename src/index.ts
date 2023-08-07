@@ -128,6 +128,7 @@ export class EventManager<EventMap extends Record<string, Array<any>>> {
 type RemoteExecutionEvents = {
     nodeFound: [RemoteExecutionNode];
     nodeTimedOut: [RemoteExecutionNode];
+    commandConnectionClosed: [];
 }
 
 // --------------------------------------------------------------------------------------------
@@ -212,6 +213,10 @@ export class RemoteExecution {
     public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true) {
         this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
         await this.commandConnection.open(this.broadcastConnection);
+
+        this.events.once("commandConnectionClosed", () => {
+            this.closeCommandConnection();
+        });
 
         if (bStopSearchingForNodes)
             this.broadcastConnection.stopSearchingForNodes();
@@ -497,7 +502,6 @@ export class RemoteExecutionNode {
 // --------------------------------------------------------------------------------------------
 
 class RemoteExecutionCommandConnection {
-    private server: net.Server;
     private commandChannelSocket?: net.Socket;
     private commandQueue: [RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>, (value: RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData> | PromiseLike<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>>) => void, (reason?: any) => void][] = []
     private isRunningCommand = false;
@@ -508,7 +512,6 @@ class RemoteExecutionCommandConnection {
         readonly remoteNode: RemoteExecutionNode,
         private events: EventManager<RemoteExecutionEvents>
     ) {
-        this.server = net.createServer();
     }
 
     /**
@@ -517,15 +520,22 @@ class RemoteExecutionCommandConnection {
      * @returns A promise that resolves when the connection is open.
      */
     public async open(broadcastConnection: RemoteExecutionBroadcastConnection): Promise<void> {
-        return new Promise((resolve, reject) => {
-            this.server.once('connection', (socket) => {
+        const server = net.createServer();
+
+        return new Promise<void>((resolve, reject) => {
+            server.once('connection', (socket) => {
                 this.commandChannelSocket = socket;
+
+                this.commandChannelSocket.on("close", this.onClose.bind(this));
+
                 resolve();
             });
 
-            this.server.listen(this.config.commandEndpoint[1], this.config.commandEndpoint[0], 1, () => {
+            server.listen(this.config.commandEndpoint[1], this.config.commandEndpoint[0], 1, () => {
                 broadcastConnection.broadcastOpenConnection(this.remoteNode);
             });
+        }).then(() => {
+            server.close();
         });
     }
 
@@ -536,7 +546,6 @@ class RemoteExecutionCommandConnection {
     public close(broadcastConnection: RemoteExecutionBroadcastConnection) {
         broadcastConnection.broadcastCloseConnection(this.remoteNode);
         this.commandChannelSocket?.destroy();
-        this.server.close();
 
         if (this.commandQueue.length > 0) {
             this.commandQueue.forEach(([, , reject]) => reject(new Error('Connection closed!')));
@@ -606,6 +615,10 @@ class RemoteExecutionCommandConnection {
         this.commandChannelSocket.on('data', dataRecieved);
 
         this.commandChannelSocket.write(message.toJson());
+    }
+
+    private onClose(hadError: boolean) {
+        this.events.emit("commandConnectionClosed");
     }
 
 }
@@ -686,22 +699,3 @@ class RemoteExecutionMessage<T = any> {
         return this.fromData(data);
     }
 }
-
-
-
-// --------------------------------------------------------------------------------------------
-//                                         DEV TESTING
-// --------------------------------------------------------------------------------------------
-
-const exec = new RemoteExecution();
-exec.start();
-exec.events.addEventListener('nodeFound', (node) => {
-});
-
-exec.getFirstRemoteNode(500).then(async (node) => {
-    await exec.openCommandConnection(node);
-    exec.runCommand('print("Hello")', true, EExecMode.EXECUTE_FILE, true).then((response) => {
-        console.log(response.output[0]?.output);
-        console.log(response.result);
-    })
-});
