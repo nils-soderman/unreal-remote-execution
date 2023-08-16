@@ -42,6 +42,7 @@ remoteExecution.getFirstRemoteNode(5000).then(
 import { RemoteExecution } from 'unreal-remote-execution';
 
 const remoteExecution = new RemoteExecution();
+remoteExecution.start();
 
 // Add a listener that is called when a node is found
 remoteExecution.events.addEventListener('nodeFound', async (node) => {
@@ -54,7 +55,7 @@ remoteExecution.events.addEventListener('nodeFound', async (node) => {
 });
 
 // Start looking for remote nodes
-remoteExecution.start();
+remoteExecution.startSearchingForNodes();
 ```
 
 

@@ -129,7 +129,7 @@ type RemoteExecutionEvents = {
     nodeFound: [RemoteExecutionNode];
     nodeTimedOut: [RemoteExecutionNode];
     commandConnectionClosed: [];
-}
+};
 
 // --------------------------------------------------------------------------------------------
 //                                    REMOTE EXECUTION
@@ -190,8 +190,8 @@ export class RemoteExecution {
      * Start broadcasting server searching for available nodes.
      * @param pingInterval The interval in milliseconds between each ping.
      */
-    public async start(pingInterval = NODE_PING_MILLISECONDS) {
-        await this.broadcastConnection.open(pingInterval);
+    public async start() {
+        await this.broadcastConnection.open();
     }
 
     /** Stop all servers & close all connections. */
@@ -211,6 +211,10 @@ export class RemoteExecution {
      * @param bStopSearchingForNodes If true, stop searching for nodes after the connection has been opened.
      */
     public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true) {
+        if (this.hasCommandConnection()) {
+            throw new Error('A command connection is already open! Please close the current command connection first.');
+        }
+
         this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
         await this.commandConnection.open(this.broadcastConnection);
 
@@ -219,6 +223,22 @@ export class RemoteExecution {
         });
 
         if (bStopSearchingForNodes)
+            this.broadcastConnection.stopSearchingForNodes();
+    }
+
+    public isSearchingForNodes() {
+        return this.broadcastConnection && this.broadcastConnection.isSearchingForNodes();
+    }
+
+    public startSearchingForNodes(pingInterval: number) {
+        if (!this.broadcastConnection)
+            throw new Error('No broadcast connection open! Please call and await "start" first.');
+
+        this.broadcastConnection.startSearchingForNodes(pingInterval);
+    }
+
+    public stopSearchingForNodes() {
+        if (this.broadcastConnection)
             this.broadcastConnection.stopSearchingForNodes();
     }
 
@@ -232,17 +252,24 @@ export class RemoteExecution {
 
     /**
      * Get the first remote node that's found.
+     * @param pingInterval The interval in milliseconds between each ping (That is used to search for nodes)
      * @param timeoutMs The timeout in milliseconds. If 0, the promise will never timeout.
      */
-    public getFirstRemoteNode(timeoutMs: number = 0): Promise<RemoteExecutionNode> {
+    public getFirstRemoteNode(pingInterval = NODE_PING_MILLISECONDS, timeoutMs: number = 0): Promise<RemoteExecutionNode> {
+        if (!this.broadcastConnection)
+            throw new Error('No broadcast connection open! Please call and await "start" first.');
+
         const actualPromise = new Promise<RemoteExecutionNode>((resolve, reject) => {
-            if (this.remoteNodes.length > 0) {
-                resolve(this.remoteNodes[0]!);
+            this.broadcastConnection.startSearchingForNodes(pingInterval);
+            if (!this.isSearchingForNodes()) {
+                this.startSearchingForNodes(NODE_PING_MILLISECONDS);
             }
 
             this.events.once('nodeFound', (node) => {
                 resolve(node);
             });
+        }).finally(() => {
+            this.broadcastConnection.stopSearchingForNodes();
         });
 
         if (timeoutMs > 0) {
@@ -298,13 +325,10 @@ class RemoteExecutionBroadcastConnection {
      * Start the broadcasting server searching for available nodes.
      * @param pingInterval The interval in milliseconds between each ping.
      */
-    public async open(pingInterval: number) {
+    public async open() {
         this.timeoutRemoteNodes();
         if (!this.broadcastSocket)
             await this.initBroadcastSocket();
-
-        this.broadcastPing();
-        this.startSearchingForNodes(pingInterval);
     }
 
     /** Close the broadcasting server. */
@@ -316,6 +340,28 @@ class RemoteExecutionBroadcastConnection {
 
         this.stopSearchingForNodes();
     }
+
+    public isSearchingForNodes() {
+        return this.broadcastListenThread !== undefined && this.broadcastListenThread.unref();
+    }
+
+    /**
+     * Start sending ping messages to all nodes at the given interval.
+     * @param pingInterval The interval in milliseconds between each ping.
+     */
+    public startSearchingForNodes(pingInterval: number) {
+        this.nodes = {};
+
+        this.broadcastPing();
+
+        if (this.broadcastListenThread) {
+            clearInterval(this.broadcastListenThread);
+        }
+
+        if (pingInterval > 0)
+            this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), pingInterval);
+    }
+
 
     /** Stop searching for nodes. The broadcasting server is still live. */
     public stopSearchingForNodes() {
@@ -330,7 +376,7 @@ class RemoteExecutionBroadcastConnection {
      */
     public broadcastPing() {
         const now = Date.now();
-        this.broadcastMessage(new RemoteExecutionMessage(ECommandType.PING, this.nodeId))
+        this.broadcastMessage(new RemoteExecutionMessage(ECommandType.PING, this.nodeId));
         this.timeoutRemoteNodes(now);
     }
 
@@ -340,7 +386,7 @@ class RemoteExecutionBroadcastConnection {
      */
     public broadcastOpenConnection(remoteNode: RemoteExecutionNode) {
         const data: IRemoteExecutionMessageOpenConnectionData = {
-            command_ip: this.config.commandEndpoint[0],
+            command_ip: this.config.commandEndpoint[0],  // eslint-disable no-unused-vars
             command_port: this.config.commandEndpoint[1]
         };
         const message = new RemoteExecutionMessage<IRemoteExecutionMessageOpenConnectionData>(ECommandType.OPEN_CONNECTION, this.nodeId, remoteNode.nodeId, data);
@@ -387,30 +433,18 @@ class RemoteExecutionBroadcastConnection {
         });
     }
 
-    /**
-     * Start sending ping messages to all nodes at the given interval.
-     * @param pingInterval The interval in milliseconds between each ping.
-     */
-    private startSearchingForNodes(pingInterval: number) {
-        if (this.broadcastListenThread) {
-            clearInterval(this.broadcastListenThread);
-        }
-
-        if (pingInterval > 0)
-            this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), pingInterval);
-    }
 
     /**
      * Broadcast a message to all nodes.
      * @param message The message to broadcast.
      */
     private broadcastMessage(message: RemoteExecutionMessage): void {
-        const data = message.toJson()
+        const data = message.toJson();
         this.broadcastSocket?.send(
             data,
             this.config.multicastGroupEndpoint[1],
             this.config.multicastGroupEndpoint[0]
-        )
+        );
     }
 
     /**
@@ -454,7 +488,8 @@ class RemoteExecutionBroadcastConnection {
         if (node) {
             node.update(data, now);
         }
-        else {
+        else if (this.isSearchingForNodes()) {
+            console.log(`Found new node: ${nodeId}`);
             const node = new RemoteExecutionNode(nodeId, data, now);
             this.nodes[nodeId] = node;
             this.events.emit('nodeFound', node);
@@ -503,7 +538,7 @@ export class RemoteExecutionNode {
 
 class RemoteExecutionCommandConnection {
     private commandChannelSocket?: net.Socket;
-    private commandQueue: [RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>, (value: RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData> | PromiseLike<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>>) => void, (reason?: any) => void][] = []
+    private commandQueue: [RemoteExecutionMessage<IRemoteExecutionMessageCommandInputData>, (value: RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData> | PromiseLike<RemoteExecutionMessage<IRemoteExecutionMessageCommandOutputData>>) => void, (reason?: any) => void][] = [];
     private isRunningCommand = false;
 
     constructor(
@@ -546,6 +581,7 @@ class RemoteExecutionCommandConnection {
     public close(broadcastConnection: RemoteExecutionBroadcastConnection) {
         broadcastConnection.broadcastCloseConnection(this.remoteNode);
         this.commandChannelSocket?.destroy();
+        this.commandChannelSocket = undefined;
 
         if (this.commandQueue.length > 0) {
             this.commandQueue.forEach(([, , reject]) => reject(new Error('Connection closed!')));
@@ -641,7 +677,7 @@ class RemoteExecutionMessage<T = any> {
      * @param nodeId The node id of the remote execution object.
      */
     public passesReceiveFilter(nodeId: string): boolean {
-        return this.source != nodeId && (!this.dest || this.dest == nodeId)
+        return this.source !== nodeId && (!this.dest || this.dest === nodeId);
     }
 
     /** Convert the message to a JSON string thats ready to be sent over the network. */
