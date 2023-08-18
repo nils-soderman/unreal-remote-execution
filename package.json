@@ -1,6 +1,6 @@
 {
     "name": "unreal-remote-execution",
-    "version": "0.1.2",
+    "version": "0.1.0",
     "description": "Package to connect to a Unreal Engine instance and execute python commands",
     "keywords": [
         "unreal",
