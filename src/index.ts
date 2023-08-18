@@ -489,7 +489,6 @@ class RemoteExecutionBroadcastConnection {
             node.update(data, now);
         }
         else if (this.isSearchingForNodes()) {
-            console.log(`Found new node: ${nodeId}`);
             const node = new RemoteExecutionNode(nodeId, data, now);
             this.nodes[nodeId] = node;
             this.events.emit('nodeFound', node);
