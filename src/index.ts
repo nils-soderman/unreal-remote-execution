@@ -230,7 +230,7 @@ export class RemoteExecution {
         return this.broadcastConnection && this.broadcastConnection.isSearchingForNodes();
     }
 
-    public startSearchingForNodes(pingInterval: number) {
+    public startSearchingForNodes(pingInterval: number = NODE_PING_MILLISECONDS) {
         if (!this.broadcastConnection)
             throw new Error('No broadcast connection open! Please call and await "start" first.');
 
