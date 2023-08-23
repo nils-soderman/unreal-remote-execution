@@ -167,6 +167,8 @@ export class RemoteExecution {
     private broadcastConnection: RemoteExecutionBroadcastConnection;
     private commandConnection?: RemoteExecutionCommandConnection;
 
+    connectedNode: RemoteExecutionNode | null = null;
+
     /**
      * The RemoteExecution class is used to find and connect to remote Unreal Engine instances.
      * @param config The configuration to use. Some of these settings must match the project settings in the Unreal Engine Python plugin for the Unreal Engine instance you want to connect to. 
@@ -217,6 +219,7 @@ export class RemoteExecution {
 
         this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
         await this.commandConnection.open(this.broadcastConnection);
+        this.connectedNode = node;
 
         this.events.once("commandConnectionClosed", () => {
             this.commandConnection = undefined;
@@ -248,6 +251,8 @@ export class RemoteExecution {
             this.commandConnection.close(this.broadcastConnection);
             this.commandConnection = undefined;
         }
+
+        this.connectedNode = null;
     }
 
     /**
