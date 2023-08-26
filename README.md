@@ -13,10 +13,10 @@ import { RemoteExecution } from 'unreal-remote-execution';
 
 const remoteExecution = new RemoteExecution();
 
-// Start the remote execution server, this will start looking for remote nodes
+// Start the remote execution server
 remoteExecution.start();
 
-// Get the first remote node found, with a timeout of 5 seconds
+// This will start searching for nodes and return the first node found, with a timeout of 5 seconds
 remoteExecution.getFirstRemoteNode(5000).then(
     async (node) => {
         // Once a node is found, open a command connection
@@ -54,7 +54,7 @@ remoteExecution.events.addEventListener('nodeFound', async (node) => {
     }
 });
 
-// Start looking for remote nodes
+// Start searching for remote nodes
 remoteExecution.startSearchingForNodes();
 ```
 
