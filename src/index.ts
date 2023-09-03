@@ -204,7 +204,7 @@ export class RemoteExecution {
 
     /** Check if a command connection is open. */
     public hasCommandConnection() {
-        return this.commandConnection !== undefined;
+        return this.commandConnection !== undefined && this.commandConnection.isOpen();
     }
 
     /**
@@ -559,6 +559,10 @@ class RemoteExecutionCommandConnection {
      * @returns A promise that resolves when the connection is open.
      */
     public async open(broadcastConnection: RemoteExecutionBroadcastConnection): Promise<void> {
+        if (this.isOpen()) {
+            throw new Error('A command connection is already open! Please close the current command connection first.');
+        }
+
         const server = net.createServer();
 
         return new Promise<void>((resolve, reject) => {
@@ -576,6 +580,11 @@ class RemoteExecutionCommandConnection {
         }).then(() => {
             server.close();
         });
+    }
+
+    /** Check if the command connection is open. */
+    public isOpen() {
+        return this.commandChannelSocket !== undefined;
     }
 
     /**
@@ -659,6 +668,8 @@ class RemoteExecutionCommandConnection {
 
     private onClose(hadError: boolean) {
         this.events.emit("commandConnectionClosed");
+        this.commandChannelSocket?.destroy();
+        this.commandChannelSocket = undefined;
     }
 
 }
