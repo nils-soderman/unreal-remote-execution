@@ -221,10 +221,6 @@ export class RemoteExecution {
         await this.commandConnection.open(this.broadcastConnection);
         this.connectedNode = node;
 
-        this.events.once("commandConnectionClosed", () => {
-            this.commandConnection = undefined;
-        });
-
         if (bStopSearchingForNodes)
             this.broadcastConnection.stopSearchingForNodes();
     }
