@@ -16,8 +16,8 @@ const remoteExecution = new RemoteExecution();
 // Start the remote execution server
 remoteExecution.start();
 
-// This will start searching for nodes and return the first node found, with a timeout of 5 seconds
-remoteExecution.getFirstRemoteNode(5000).then(
+// This will start searching for nodes and return the first node found, it'll send a new ping every 1 second, with a timeout of 5 seconds
+remoteExecution.getFirstRemoteNode(1000, 5000).then(
     async (node) => {
         // Once a node is found, open a command connection
         // this will allow us to run commands on that node
