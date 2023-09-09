@@ -570,6 +570,10 @@ class RemoteExecutionCommandConnection {
                 resolve();
             });
 
+            server.once('error', (err) => {
+                reject(err);
+            });
+
             server.listen(this.config.commandEndpoint[1], this.config.commandEndpoint[0], 1, () => {
                 broadcastConnection.broadcastOpenConnection(this.remoteNode);
             });
