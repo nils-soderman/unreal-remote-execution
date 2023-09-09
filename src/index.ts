@@ -211,18 +211,30 @@ export class RemoteExecution {
      * Open a command connection to the given node.
      * @param node The node to open a command connection with.
      * @param bStopSearchingForNodes If true, stop searching for nodes after the connection has been opened.
+     * @param timeoutMs The timeout in milliseconds. If 0, the promise will never timeout.
      */
-    public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true) {
+    public async openCommandConnection(node: RemoteExecutionNode, bStopSearchingForNodes = true, timeoutMs: number = 0) {
         if (this.hasCommandConnection()) {
             throw new Error('A command connection is already open! Please close the current command connection first.');
         }
 
-        this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
-        await this.commandConnection.open(this.broadcastConnection);
-        this.connectedNode = node;
+        const actualPromise = new Promise<void>(async (resolve, reject) => {
+            this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
+            await this.commandConnection.open(this.broadcastConnection);
+            this.connectedNode = node;
+        });
 
-        if (bStopSearchingForNodes)
-            this.broadcastConnection.stopSearchingForNodes();
+        if (timeoutMs > 0) {
+            return Promise.race([actualPromise, timeoutPromise(timeoutMs, "Timed out: Could connect to the node within the given time.")]).finally(() => {
+                if (bStopSearchingForNodes)
+                    this.broadcastConnection.stopSearchingForNodes();
+            }) as Promise<void>;
+        }
+
+        return actualPromise.finally(() => {
+            if (bStopSearchingForNodes)
+                this.broadcastConnection.stopSearchingForNodes();
+        });
     }
 
     public isSearchingForNodes() {
