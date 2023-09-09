@@ -220,8 +220,10 @@ export class RemoteExecution {
 
         const actualPromise = new Promise<void>(async (resolve, reject) => {
             this.commandConnection = new RemoteExecutionCommandConnection(this.config, this.nodeId, node, this.events);
-            await this.commandConnection.open(this.broadcastConnection);
-            this.connectedNode = node;
+            this.commandConnection.open(this.broadcastConnection).then(() => {
+                this.connectedNode = node;
+                resolve();
+            }).catch(reject);
         });
 
         if (timeoutMs > 0) {
