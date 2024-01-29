@@ -151,7 +151,7 @@ export class RemoteExecutionConfig {
     constructor(
         public readonly multicastTTL: number = 0,
         public readonly multicastGroupEndpoint: [string, number] = ['239.0.0.1', 6766],
-        public readonly multicastBindAddress: string = '0.0.0.0',
+        public readonly multicastBindAddress: string = '127.0.0.1',
         public readonly commandEndpoint: [string, number] = ["127.0.0.1", 6776]
     ) { }
 }
@@ -283,12 +283,12 @@ export class RemoteExecution {
             this.events.once('nodeFound', (node) => {
                 resolve(node);
             });
-        }).finally(() => {
-            this.broadcastConnection.stopSearchingForNodes();
         });
 
         if (timeoutMs > 0) {
-            return Promise.race([actualPromise, timeoutPromise(timeoutMs, "Timed out: Could not find a node within the given time.")]) as Promise<RemoteExecutionNode>;
+            return Promise.race([actualPromise, timeoutPromise(timeoutMs, "Timed out: Could not find a node within the given time.")]).finally(() => {
+                this.broadcastConnection.stopSearchingForNodes();
+            }) as Promise<RemoteExecutionNode>;
         }
 
         return actualPromise;
@@ -369,14 +369,13 @@ class RemoteExecutionBroadcastConnection {
 
         this.broadcastPing();
 
-        if (this.broadcastListenThread) {
+        if (this.broadcastListenThread !== undefined) {
             clearInterval(this.broadcastListenThread);
         }
 
         if (pingInterval > 0)
             this.broadcastListenThread = setInterval(this.broadcastPing.bind(this), pingInterval);
     }
-
 
     /** Stop searching for nodes. The broadcasting server is still live. */
     public stopSearchingForNodes() {
