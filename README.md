@@ -32,6 +32,7 @@ remoteExecution.getFirstRemoteNode(1000, 5000).then(
     },
     () => {
         console.log("No remote nodes found!");
+        remoteExecution.stop();
     }
 );
 ```
