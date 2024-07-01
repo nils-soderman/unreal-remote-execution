@@ -22,7 +22,6 @@
         "url": "https://github.com/nils-soderman/unreal-remote-execution"
     },
     "scripts": {
-        "prepublish": "pnpm run build",
         "build": "tsup src/index.ts --format cjs,esm --dts --minify --clean",
         "watch": "tsup src/index.ts --format cjs,esm --dts --watch --clean  --sourcemap",
         "test": "jest",
