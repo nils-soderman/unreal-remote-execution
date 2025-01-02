@@ -3,6 +3,8 @@ NodeJS module for connecting to Unreal Engine and running Python commands/code.
 
 ## Notes
 
+This requires the _"Python Editor Script Plugin"_ to be enabled, and _"Enable Remote Execution?"_ to be ticked in the project settings.
+
 In this API Unreal Engine instances are referred to as _"nodes"_.
 
 ## Examples
