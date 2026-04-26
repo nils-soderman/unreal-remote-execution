@@ -20,7 +20,8 @@ Linux requires additional setup before use
    sudo ip route add 239.0.0.1 dev lo
    ```
    With `239.0.0.1` being the IP configured as the "Multicast Group Endpoint" in Unreal Engine's Python project settings.
-   > [!NOTE] This route is not persistent and must be re-run after each reboot.
+   > [!NOTE] 
+   > This route is not persistent and must be re-run after each reboot.
 
 2. **Set Unreal's Multicast Bind Address to `0.0.0.0`:**  
    Project Settings → Plugins → Python → Python Remote Execution → Advanced → Multicast Bind Address → `0.0.0.0`
