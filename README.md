@@ -1,13 +1,30 @@
 # Unreal Engine Remote Execution
 NodeJS module for connecting to Unreal Engine and running Python commands/code.
 
-## Notes
 
-This requires the _"Python Editor Script Plugin"_ to be enabled, and _"Enable Remote Execution?"_ to be ticked in the project settings.
+## Setup
 
-In this API Unreal Engine instances are referred to as _"nodes"_.
+1. Enable the Unreal Engine Plugin _"Python Editor Script Plugin"_ in your project
+2. In Project Settings → Plugins → Python, tick the _"Enable Remote Execution?"_ checkbox 
+
+### Linux
+
+Linux requires additional setup before use
+
+1. **Allow multicast traffic between local processes**
+   ```bash
+   sudo ip route add 239.0.0.1 dev lo
+   ```
+   With `239.0.0.1` being the IP configured as the "Multicast Group Endpoint" in Unreal Engine's Python project settings.
+   > [!NOTE] This route is not persistent and must be re-run after each reboot.
+
+2. **Set Unreal's Multicast Bind Address to `0.0.0.0`:**  
+   Project Settings → Plugins → Python → Python Remote Execution → Advanced → Multicast Bind Address → `0.0.0.0`
+
 
 ## Examples
+
+In this API Unreal Engine instances are referred to as _"nodes"_.
 
 ### Running a command on the first remote node found
 ```typescript
@@ -40,7 +57,7 @@ remoteExecution.getFirstRemoteNode(1000, 5000).then(
 ```
 
 
-### Connecting to a spesific Unreal Engine instance
+### Connecting to a specific Unreal Engine instance
 ```typescript
 import { RemoteExecution } from 'unreal-remote-execution';
 

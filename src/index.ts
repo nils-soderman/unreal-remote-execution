@@ -136,7 +136,7 @@ type RemoteExecutionEvents = {
 // --------------------------------------------------------------------------------------------
 
 function timeoutPromise(ms: number, reason?: string) {
-    return new Promise((resolve, reject) => setTimeout(() => reject(new Error(reason)), ms));
+    return new Promise((resolve, reject) => setTimeout(() => reject(new Error(reason)), ms).unref());
 }
 
 
@@ -145,13 +145,13 @@ export class RemoteExecutionConfig {
     /**
      * @param multicastTTL The TTL (Time To Live) that the UDP multicast socket should use. 0 = Limited to the local host, 1 = Limited to the same subnet
      * @param multicastGroupEndpoint The multicast group endpoint to use. [IP, Port]
-     * @param multicastBindAddress The address to bind the multicast socket to.
+     * @param multicastBindAddress The address to bind the multicast socket to. On Linux this must be 0.0.0.0 to receive multicast packets.
      * @param commandEndpoint The endpoint to use for the command channel. [IP, Port]
      */
     constructor(
         public readonly multicastTTL: number = 0,
         public readonly multicastGroupEndpoint: [string, number] = ['239.0.0.1', 6766],
-        public readonly multicastBindAddress: string = '127.0.0.1',
+        public readonly multicastBindAddress: string = process.platform === 'linux' ? '0.0.0.0' : '127.0.0.1',
         public readonly commandEndpoint: [string, number] = ["127.0.0.1", 6776]
     ) { }
 }
